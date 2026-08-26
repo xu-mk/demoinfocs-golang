@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 
 	"github.com/golang/geo/r3"
@@ -14,8 +15,6 @@ import (
 	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
 )
 
-const playerPositionHistorySize = 24 // ~0.375s at 64-tick; enough to see jump ascent / run-up
-
 type Vec3 struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
@@ -23,7 +22,7 @@ type Vec3 struct {
 }
 
 type ViewAngles struct {
-	Yaw   float32 `json:"yaw"`   // ViewDirectionX, 0..360
+	Yaw   float32 `json:"yaw"`   // ViewDirectionX
 	Pitch float32 `json:"pitch"` // ViewDirectionY
 }
 
@@ -42,7 +41,8 @@ type GrenadeThrow struct {
 	ThrowerView     ViewAngles  `json:"thrower_view_angles"`
 	Start           Vec3        `json:"start"`
 	End             Vec3        `json:"end"`
-	ThrowMethod     string      `json:"throw_method"`
+	GroundSpeed     float64     `json:"ground_speed"` // approximate cl_showpos vel (XY units/s)
+	Airborne        bool        `json:"airborne"`
 	Tick            int         `json:"tick"`
 }
 
@@ -61,25 +61,28 @@ type pendingThrow struct {
 	round   int
 }
 
+type playerMotionSample struct {
+	pos     r3.Vector
+	tick    int
+	hasPrev bool
+	speed   float64 // last computed ground speed
+}
+
 type exporter struct {
-	mapName string
-	round   int
+	mapName  string
+	round    int
+	tickRate float64
 
-	// steamID64 -> recent positions (oldest -> newest)
-	posHistory map[uint64][]r3.Vector
-
-	// projectile UniqueID -> incomplete throw
+	motion  map[uint64]playerMotionSample
 	pending map[int64]*pendingThrow
-
-	// round number -> throws
 	byRound map[int][]GrenadeThrow
 }
 
 func newExporter() *exporter {
 	return &exporter{
-		posHistory: make(map[uint64][]r3.Vector),
-		pending:    make(map[int64]*pendingThrow),
-		byRound:    make(map[int][]GrenadeThrow),
+		motion:  make(map[uint64]playerMotionSample),
+		pending: make(map[int64]*pendingThrow),
+		byRound: make(map[int][]GrenadeThrow),
 	}
 }
 
@@ -100,6 +103,17 @@ func toVec3(v r3.Vector) Vec3 {
 	return Vec3{X: v.X, Y: v.Y, Z: v.Z}
 }
 
+func groundSpeedBetween(prev, cur r3.Vector, prevTick, curTick int, tickRate float64) (float64, bool) {
+	if tickRate <= 0 || curTick <= prevTick {
+		return 0, false
+	}
+	dt := float64(curTick-prevTick) / tickRate
+	if dt <= 0 {
+		return 0, false
+	}
+	return math.Hypot(cur.X-prev.X, cur.Y-prev.Y) / dt, true
+}
+
 func (e *exporter) currentRound(gs demoinfocs.GameState) int {
 	if e.round > 0 {
 		return e.round
@@ -111,18 +125,39 @@ func (e *exporter) currentRound(gs demoinfocs.GameState) int {
 	return n
 }
 
-func (e *exporter) trackPlayers(gs demoinfocs.GameState) {
+func (e *exporter) trackPlayers(gs demoinfocs.GameState, tickRate float64) {
+	if tickRate > 0 {
+		e.tickRate = tickRate
+	}
+	tick := gs.IngameTick()
 	for _, pl := range gs.Participants().Playing() {
 		if pl == nil || pl.SteamID64 == 0 {
 			continue
 		}
 		pos := pl.Position()
-		hist := append(e.posHistory[pl.SteamID64], pos)
-		if len(hist) > playerPositionHistorySize {
-			hist = hist[len(hist)-playerPositionHistorySize:]
+		sample := e.motion[pl.SteamID64]
+		if sample.hasPrev {
+			if speed, ok := groundSpeedBetween(sample.pos, pos, sample.tick, tick, e.tickRate); ok {
+				sample.speed = speed
+			}
 		}
-		e.posHistory[pl.SteamID64] = hist
+		sample.pos = pos
+		sample.tick = tick
+		sample.hasPrev = true
+		e.motion[pl.SteamID64] = sample
 	}
+}
+
+func (e *exporter) groundSpeedAt(steamID uint64, pos r3.Vector, tick int) float64 {
+	sample, ok := e.motion[steamID]
+	if !ok || !sample.hasPrev {
+		return 0
+	}
+	if speed, ok := groundSpeedBetween(sample.pos, pos, sample.tick, tick, e.tickRate); ok {
+		return speed
+	}
+	// Same tick as last sample: reuse last frame speed.
+	return sample.speed
 }
 
 func (e *exporter) onRoundStart(gs demoinfocs.GameState) {
@@ -133,7 +168,6 @@ func (e *exporter) onRoundStart(gs demoinfocs.GameState) {
 	if n < 1 {
 		n = 1
 	}
-	// Prefer CCSGameRules' total rounds. Ignore duplicate RoundStart for the same value.
 	if n > e.round {
 		e.round = n
 	} else if e.round == 0 {
@@ -155,10 +189,10 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 
 	throwerInfo := ThrowerInfo{Name: "unknown"}
 	var (
-		throwerPos r3.Vector
-		view       ViewAngles
-		airborne   bool
-		posHistory []r3.Vector
+		throwerPos  r3.Vector
+		view        ViewAngles
+		airborne    bool
+		groundSpeed float64
 	)
 
 	if pl := proj.Thrower; pl != nil {
@@ -174,10 +208,7 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 			Pitch: pl.ViewDirectionY(),
 		}
 		airborne = pl.IsAirborne()
-		posHistory = append([]r3.Vector(nil), e.posHistory[pl.SteamID64]...)
-		if len(posHistory) == 0 || posHistory[len(posHistory)-1] != throwerPos {
-			posHistory = append(posHistory, throwerPos)
-		}
+		groundSpeed = e.groundSpeedAt(pl.SteamID64, throwerPos, gs.IngameTick())
 	}
 
 	start := proj.Position()
@@ -195,7 +226,8 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 			ThrowerPosition: toVec3(throwerPos),
 			ThrowerView:     view,
 			Start:           toVec3(start),
-			ThrowMethod:     classifyThrowMethod(posHistory, airborne),
+			GroundSpeed:     groundSpeed,
+			Airborne:        airborne,
 			Tick:            gs.IngameTick(),
 		},
 	}
@@ -283,7 +315,7 @@ func ExportDemoThrows(r io.Reader) (DemoThrowsJSON, error) {
 	})
 
 	parser.RegisterEventHandler(func(events.FrameDone) {
-		exp.trackPlayers(parser.GameState())
+		exp.trackPlayers(parser.GameState(), parser.TickRate())
 	})
 
 	parser.RegisterEventHandler(func(ev events.GrenadeProjectileThrow) {

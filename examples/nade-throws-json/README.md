@@ -2,6 +2,8 @@
 
 按回合导出 CS2 demo 中的道具投掷信息为 JSON，可作为本地 CLI 或简单 HTTP 后端使用。
 
+本版本**不做投掷方式分类**，只导出投掷瞬间状态字段。
+
 ## 输出字段
 
 每个道具包含：
@@ -14,16 +16,11 @@
 | `thrower_position` | 投掷时投掷者位置 |
 | `thrower_view_angles` | 投掷时准星角度（yaw / pitch） |
 | `start` / `end` | 投掷物起落点 |
-| `throw_method` | 投掷方式 |
+| `ground_speed` | 投掷瞬间地速（XY，单位 u/s，近似 `cl_showpos` 的 `vel`） |
+| `airborne` | 投掷瞬间是否悬空（`IsAirborne()`） |
+| `tick` | 投掷时的 ingame tick |
 
-### `throw_method`
-
-| 值 | 含义 |
-|----|------|
-| `standing_still` | 站立不动投掷：投掷前短窗口内 xyz 均无明显位移 |
-| `standing_jump` | 站立不动跳投：仅 z 有位移，且投掷时 `IsAirborne()` |
-| `running_jump` | 跑跳投：xy 与 z 均有位移，且投掷时 `IsAirborne()` |
-| `other` | 未落入以上三类（例如跑投不跳、落地滑步等） |
+> 说明：CS2 demo 通常不直接联网玩家速度，`ground_speed` 由相邻采样点的水平位移 / 时间估算，可能与客户端 `vel` 有少量偏差。
 
 ## CLI
 
