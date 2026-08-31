@@ -150,7 +150,8 @@ func classifySpecial(in throwClassificationInput) string {
 	if in.Duck {
 		s += "蹲"
 	}
-	if in.Walk {
+	// Stationary throws ignore walk/shift; only duck is labeled.
+	if in.Walk && in.GroundSpeed > groundSpeedStillEpsilon {
 		s += "shift"
 	}
 	return s

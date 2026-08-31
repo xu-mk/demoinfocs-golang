@@ -110,6 +110,25 @@ func TestFormatThrowMethodExamples(t *testing.T) {
 			},
 			want: "wd跑左键投",
 		},
+		{
+			name: "地速为0时忽略静走，只标蹲",
+			in: throwClassificationInput{
+				LeftClickHeld: true,
+				Walk:          true,
+				Duck:          true,
+				GroundSpeed:   0,
+			},
+			want: "蹲左键投",
+		},
+		{
+			name: "地速为0且静走未蹲则为站投",
+			in: throwClassificationInput{
+				LeftClickHeld: true,
+				Walk:          true,
+				GroundSpeed:   0,
+			},
+			want: "左键站投",
+		},
 	}
 
 	for _, tc := range tests {
