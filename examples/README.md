@@ -8,6 +8,7 @@ Here you can find a overview of examples on how to use demoinfocs-golang.
 |-|-|
 |[heatmap](heatmap)|Creating a heatmap from positions where players fired shots from|
 |[nade-trajectories](nade-trajectories)|Map overview with grenade trajectories|
+|[nade-throws-json](nade-throws-json)|Export per-round grenade throws (type, thrower, angles, start/end, ground speed, airborne, throw method) as JSON / HTTP API|
 |[voice-capture](voice-capture)|Capture voice data from players|
 |[entities](entities)|Using unhandled data from entities (`Parser.ServerClasses()`)|
 |[net-messages](net-messages)|Parsing and handling custom net-messages|
