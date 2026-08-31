@@ -183,6 +183,8 @@ func TestLastGrenadeClickHold(t *testing.T) {
 
 func TestLastDirectionHold(t *testing.T) {
 	w := uint64(common.ButtonForward)
+	a := uint64(common.ButtonMoveLeft)
+	s := uint64(common.ButtonBack)
 	d := uint64(common.ButtonMoveRight)
 
 	// 跑一步: tap W, release, then throw.
@@ -190,7 +192,7 @@ func TestLastDirectionHold(t *testing.T) {
 		{tick: 10, state: w},
 		{tick: 20, state: 0},
 	}
-	f, b, l, r := lastDirectionHold(released, 30)
+	f, b, l, r := lastDirectionHold(released, 30, 26)
 	assert.True(t, f)
 	assert.False(t, b)
 	assert.False(t, l)
@@ -201,19 +203,45 @@ func TestLastDirectionHold(t *testing.T) {
 		{tick: 10, state: d},
 		{tick: 30, state: d},
 	}
-	f, b, l, r = lastDirectionHold(held, 30)
+	f, b, l, r = lastDirectionHold(held, 30, 26)
 	assert.True(t, r)
 	assert.False(t, f)
 
 	// Older A tap should not override the last D hold.
-	a := uint64(common.ButtonMoveLeft)
 	mixed := []timedButtons{
 		{tick: 1, state: a},
 		{tick: 2, state: 0},
 		{tick: 40, state: d},
 		{tick: 50, state: 0},
 	}
-	f, b, l, r = lastDirectionHold(mixed, 60)
+	f, b, l, r = lastDirectionHold(mixed, 60, 26)
 	assert.True(t, r)
 	assert.False(t, l)
+
+	// A long WASD strafe must not become "wasd"; only the last short segment counts.
+	long := []timedButtons{
+		{tick: 1, state: w},
+		{tick: 10, state: w | a},
+		{tick: 20, state: a},
+		{tick: 30, state: a | s},
+		{tick: 40, state: s},
+		{tick: 50, state: s | d},
+		{tick: 60, state: d},
+	}
+	f, b, l, r = lastDirectionHold(long, 60, 26)
+	assert.True(t, r)
+	assert.False(t, f)
+	assert.False(t, b)
+	assert.False(t, l)
+
+	// Input outside the lookback window is ignored.
+	old := []timedButtons{
+		{tick: 1, state: w},
+		{tick: 2, state: 0},
+	}
+	f, b, l, r = lastDirectionHold(old, 80, 26)
+	assert.False(t, f)
+	assert.False(t, b)
+	assert.False(t, l)
+	assert.False(t, r)
 }

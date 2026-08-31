@@ -256,7 +256,7 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 		groundSpeed = e.groundSpeedAt(key, throwerPos, tick)
 		e.recordButtons(key, tick, pl.ButtonsPressedState)
 		attack, attack2 := lastGrenadeClickHold(e.buttons[key], tick)
-		forward, back, left, right := lastDirectionHold(e.buttons[key], tick)
+		forward, back, left, right := lastDirectionHold(e.buttons[key], tick, directionLookbackTicks(e.tickRate))
 		in := throwClassificationInput{
 			LeftClickHeld:  attack,
 			RightClickHeld: attack2,

@@ -5,10 +5,13 @@ import (
 )
 
 const (
-	runSpeedMin             = 190 // ~245 跑投
-	runStepSpeedMin         = 80  // ~130 跑一步投
-	airStrafeSpeedMax       = 60  // ~30 跳起后按方向键
-	groundSpeedStillEpsilon = 8   // treat as standing
+	runSpeedMin              = 190 // ~245 跑投
+	runStepSpeedMin          = 80  // ~130 跑一步投
+	airStrafeSpeedMax        = 60  // ~30 跳起后按方向键
+	groundSpeedStillEpsilon  = 8   // treat as standing
+	directionLookbackSeconds = 0.4 // only the short input window before throw
+	directionSnapshotTicks   = 3   // union keys from the last few ticks of that window
+	defaultDirectionLookback = 26  // ~0.4s at 64-tick
 )
 
 func wasdMask() uint64 {
@@ -19,13 +22,33 @@ func wasdDown(state uint64) bool {
 	return (state & wasdMask()) != 0
 }
 
-// lastDirectionHold returns WASD keys from the last movement-key hold at or before throwTick.
-// That hold may already have been released (跑一步) or still be down (跑投).
-func lastDirectionHold(samples []timedButtons, throwTick int) (forward, back, left, right bool) {
+func directionLookbackTicks(tickRate float64) int {
+	if tickRate <= 0 {
+		return defaultDirectionLookback
+	}
+	n := int(tickRate * directionLookbackSeconds)
+	if n < 8 {
+		return 8
+	}
+	return n
+}
+
+// lastDirectionHold returns WASD keys from a short window before throwTick.
+// It uses the last direction-key sample in that window (released 跑一步 or still held),
+// not the whole earlier movement history.
+func lastDirectionHold(samples []timedButtons, throwTick, lookbackTicks int) (forward, back, left, right bool) {
+	if lookbackTicks <= 0 {
+		lookbackTicks = defaultDirectionLookback
+	}
+	windowStart := throwTick - lookbackTicks
+
 	idx := -1
 	for i := len(samples) - 1; i >= 0; i-- {
 		if samples[i].tick > throwTick {
 			continue
+		}
+		if samples[i].tick < windowStart {
+			break
 		}
 		if wasdDown(samples[i].state) {
 			idx = i
@@ -36,20 +59,18 @@ func lastDirectionHold(samples []timedButtons, throwTick int) (forward, back, le
 		return false, false, false, false
 	}
 
-	start := idx
-	for start > 0 {
-		if !wasdDown(samples[start-1].state) {
-			break
-		}
-		start--
+	lastTick := samples[idx].tick
+	snapshotStart := lastTick - directionSnapshotTicks
+	if snapshotStart < windowStart {
+		snapshotStart = windowStart
 	}
 
-	for i := start; i < len(samples); i++ {
+	for i := idx; i >= 0; i-- {
 		s := samples[i]
-		if s.tick > throwTick {
+		if s.tick < snapshotStart {
 			break
 		}
-		if i > start && !wasdDown(s.state) {
+		if !wasdDown(s.state) {
 			break
 		}
 		if buttonDown(s.state, demoinfocs.ButtonForward) {
