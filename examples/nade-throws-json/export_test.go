@@ -34,6 +34,8 @@ func TestExportDemoThrowsFile(t *testing.T) {
 			assert.NotEmpty(t, g.Type)
 			assert.NotZero(t, g.ID)
 			assert.GreaterOrEqual(t, g.GroundSpeed, 0.0)
+			assert.NotEmpty(t, g.ThrowMethod)
+			assert.Contains(t, g.ThrowMethod, "投")
 			if g.Airborne {
 				sawAirborne = true
 			}

@@ -43,6 +43,7 @@ type GrenadeThrow struct {
 	End             Vec3        `json:"end"`
 	GroundSpeed     float64     `json:"ground_speed"` // approximate cl_showpos vel (XY units/s)
 	Airborne        bool        `json:"airborne"`
+	ThrowMethod     string      `json:"throw_method"`
 	Tick            int         `json:"tick"`
 }
 
@@ -74,6 +75,7 @@ type exporter struct {
 	tickRate float64
 
 	motion  map[uint64]playerMotionSample
+	buttons map[uint64][]timedButtons
 	pending map[int64]*pendingThrow
 	byRound map[int][]GrenadeThrow
 }
@@ -81,9 +83,44 @@ type exporter struct {
 func newExporter() *exporter {
 	return &exporter{
 		motion:  make(map[uint64]playerMotionSample),
+		buttons: make(map[uint64][]timedButtons),
 		pending: make(map[int64]*pendingThrow),
 		byRound: make(map[int][]GrenadeThrow),
 	}
+}
+
+const maxButtonSamples = 1024
+
+func playerKey(pl *common.Player) uint64 {
+	if pl == nil {
+		return 0
+	}
+	if pl.SteamID64 != 0 {
+		return pl.SteamID64
+	}
+	return uint64(uint32(pl.EntityID))<<32 | uint64(uint32(pl.UserID))
+}
+
+func (e *exporter) recordButtons(key uint64, tick int, state uint64) {
+	if key == 0 {
+		return
+	}
+	hist := e.buttons[key]
+	if n := len(hist); n > 0 {
+		if hist[n-1].tick == tick && hist[n-1].state == state {
+			return
+		}
+		if hist[n-1].state == state {
+			hist[n-1].tick = tick
+			e.buttons[key] = hist
+			return
+		}
+	}
+	hist = append(hist, timedButtons{tick: tick, state: state})
+	if len(hist) > maxButtonSamples {
+		hist = hist[len(hist)-maxButtonSamples:]
+	}
+	e.buttons[key] = hist
 }
 
 func teamName(t common.Team) string {
@@ -131,11 +168,15 @@ func (e *exporter) trackPlayers(gs demoinfocs.GameState, tickRate float64) {
 	}
 	tick := gs.IngameTick()
 	for _, pl := range gs.Participants().Playing() {
-		if pl == nil || pl.SteamID64 == 0 {
+		if pl == nil {
+			continue
+		}
+		key := playerKey(pl)
+		if key == 0 {
 			continue
 		}
 		pos := pl.Position()
-		sample := e.motion[pl.SteamID64]
+		sample := e.motion[key]
 		if sample.hasPrev {
 			if speed, ok := groundSpeedBetween(sample.pos, pos, sample.tick, tick, e.tickRate); ok {
 				sample.speed = speed
@@ -144,12 +185,13 @@ func (e *exporter) trackPlayers(gs demoinfocs.GameState, tickRate float64) {
 		sample.pos = pos
 		sample.tick = tick
 		sample.hasPrev = true
-		e.motion[pl.SteamID64] = sample
+		e.motion[key] = sample
+		e.recordButtons(key, tick, pl.ButtonsPressedState)
 	}
 }
 
-func (e *exporter) groundSpeedAt(steamID uint64, pos r3.Vector, tick int) float64 {
-	sample, ok := e.motion[steamID]
+func (e *exporter) groundSpeedAt(key uint64, pos r3.Vector, tick int) float64 {
+	sample, ok := e.motion[key]
 	if !ok || !sample.hasPrev {
 		return 0
 	}
@@ -193,9 +235,11 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 		view        ViewAngles
 		airborne    bool
 		groundSpeed float64
+		throwMethod string
 	)
 
 	if pl := proj.Thrower; pl != nil {
+		key := playerKey(pl)
 		throwerInfo = ThrowerInfo{
 			Name:      pl.Name,
 			SteamID64: pl.SteamID64,
@@ -208,7 +252,34 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 			Pitch: pl.ViewDirectionY(),
 		}
 		airborne = pl.IsAirborne()
-		groundSpeed = e.groundSpeedAt(pl.SteamID64, throwerPos, gs.IngameTick())
+		tick := gs.IngameTick()
+		groundSpeed = e.groundSpeedAt(key, throwerPos, tick)
+		e.recordButtons(key, tick, pl.ButtonsPressedState)
+		attack, attack2 := lastGrenadeClickHold(e.buttons[key], tick)
+		in := throwClassificationInput{
+			LeftClickHeld:  attack,
+			RightClickHeld: attack2,
+			Forward:        pl.IsPressingButton(common.ButtonForward),
+			Back:           pl.IsPressingButton(common.ButtonBack),
+			Left:           pl.IsPressingButton(common.ButtonMoveLeft),
+			Right:          pl.IsPressingButton(common.ButtonMoveRight),
+			Duck:           pl.IsPressingButton(common.ButtonDuck),
+			Walk:           pl.IsPressingButton(common.ButtonSpeed),
+			Airborne:       airborne,
+			GroundSpeed:    groundSpeed,
+		}
+		// If the throw tick already cleared movement bits, reuse the latest nearby sample.
+		if !hasDirection(in) && !in.Duck && !in.Walk {
+			if hist := e.buttons[key]; len(hist) > 0 {
+				last := hist[len(hist)-1]
+				if last.tick == tick || tick-last.tick <= 2 {
+					in.Forward, in.Back, in.Left, in.Right, in.Duck, in.Walk = movementFromMask(last.state)
+				}
+			}
+		}
+		throwMethod = formatThrowMethod(in)
+	} else {
+		throwMethod = formatThrowMethod(throwClassificationInput{})
 	}
 
 	start := proj.Position()
@@ -228,6 +299,7 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 			Start:           toVec3(start),
 			GroundSpeed:     groundSpeed,
 			Airborne:        airborne,
+			ThrowMethod:     throwMethod,
 			Tick:            gs.IngameTick(),
 		},
 	}
@@ -316,6 +388,13 @@ func ExportDemoThrows(r io.Reader) (DemoThrowsJSON, error) {
 
 	parser.RegisterEventHandler(func(events.FrameDone) {
 		exp.trackPlayers(parser.GameState(), parser.TickRate())
+	})
+
+	parser.RegisterEventHandler(func(ev events.PlayerButtonsStateUpdate) {
+		if ev.Player == nil {
+			return
+		}
+		exp.recordButtons(playerKey(ev.Player), parser.GameState().IngameTick(), ev.ButtonsState)
 	})
 
 	parser.RegisterEventHandler(func(ev events.GrenadeProjectileThrow) {
