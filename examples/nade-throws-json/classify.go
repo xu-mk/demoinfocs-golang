@@ -5,10 +5,68 @@ import (
 )
 
 const (
-	runSpeedMin       = 190 // ~245 跑投
-	runStepSpeedMin   = 80  // ~130 跑一步投
-	airStrafeSpeedMax = 60  // ~30 跳起后按方向键
+	runSpeedMin             = 190 // ~245 跑投
+	runStepSpeedMin         = 80  // ~130 跑一步投
+	airStrafeSpeedMax       = 60  // ~30 跳起后按方向键
+	groundSpeedStillEpsilon = 8   // treat as standing
 )
+
+func wasdMask() uint64 {
+	return uint64(demoinfocs.ButtonForward | demoinfocs.ButtonBack | demoinfocs.ButtonMoveLeft | demoinfocs.ButtonMoveRight)
+}
+
+func wasdDown(state uint64) bool {
+	return (state & wasdMask()) != 0
+}
+
+// lastDirectionHold returns WASD keys from the last movement-key hold at or before throwTick.
+// That hold may already have been released (跑一步) or still be down (跑投).
+func lastDirectionHold(samples []timedButtons, throwTick int) (forward, back, left, right bool) {
+	idx := -1
+	for i := len(samples) - 1; i >= 0; i-- {
+		if samples[i].tick > throwTick {
+			continue
+		}
+		if wasdDown(samples[i].state) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return false, false, false, false
+	}
+
+	start := idx
+	for start > 0 {
+		if !wasdDown(samples[start-1].state) {
+			break
+		}
+		start--
+	}
+
+	for i := start; i < len(samples); i++ {
+		s := samples[i]
+		if s.tick > throwTick {
+			break
+		}
+		if i > start && !wasdDown(s.state) {
+			break
+		}
+		if buttonDown(s.state, demoinfocs.ButtonForward) {
+			forward = true
+		}
+		if buttonDown(s.state, demoinfocs.ButtonBack) {
+			back = true
+		}
+		if buttonDown(s.state, demoinfocs.ButtonMoveLeft) {
+			left = true
+		}
+		if buttonDown(s.state, demoinfocs.ButtonMoveRight) {
+			right = true
+		}
+	}
+	return forward, back, left, right
+}
 
 type timedButtons struct {
 	tick  int
@@ -87,15 +145,6 @@ func classifyMouse(in throwClassificationInput) string {
 	}
 }
 
-func movementFromMask(state uint64) (forward, back, left, right, duck, walk bool) {
-	return buttonDown(state, demoinfocs.ButtonForward),
-		buttonDown(state, demoinfocs.ButtonBack),
-		buttonDown(state, demoinfocs.ButtonMoveLeft),
-		buttonDown(state, demoinfocs.ButtonMoveRight),
-		buttonDown(state, demoinfocs.ButtonDuck),
-		buttonDown(state, demoinfocs.ButtonSpeed)
-}
-
 func classifySpecial(in throwClassificationInput) string {
 	s := ""
 	if in.Duck {
@@ -108,6 +157,9 @@ func classifySpecial(in throwClassificationInput) string {
 }
 
 func classifyDirections(in throwClassificationInput) string {
+	if in.GroundSpeed <= groundSpeedStillEpsilon {
+		return ""
+	}
 	s := ""
 	if in.Forward {
 		s += "w"

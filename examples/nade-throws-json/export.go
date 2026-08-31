@@ -256,26 +256,18 @@ func (e *exporter) onThrow(gs demoinfocs.GameState, ev events.GrenadeProjectileT
 		groundSpeed = e.groundSpeedAt(key, throwerPos, tick)
 		e.recordButtons(key, tick, pl.ButtonsPressedState)
 		attack, attack2 := lastGrenadeClickHold(e.buttons[key], tick)
+		forward, back, left, right := lastDirectionHold(e.buttons[key], tick)
 		in := throwClassificationInput{
 			LeftClickHeld:  attack,
 			RightClickHeld: attack2,
-			Forward:        pl.IsPressingButton(common.ButtonForward),
-			Back:           pl.IsPressingButton(common.ButtonBack),
-			Left:           pl.IsPressingButton(common.ButtonMoveLeft),
-			Right:          pl.IsPressingButton(common.ButtonMoveRight),
+			Forward:        forward,
+			Back:           back,
+			Left:           left,
+			Right:          right,
 			Duck:           pl.IsPressingButton(common.ButtonDuck),
 			Walk:           pl.IsPressingButton(common.ButtonSpeed),
 			Airborne:       airborne,
 			GroundSpeed:    groundSpeed,
-		}
-		// If the throw tick already cleared movement bits, reuse the latest nearby sample.
-		if !hasDirection(in) && !in.Duck && !in.Walk {
-			if hist := e.buttons[key]; len(hist) > 0 {
-				last := hist[len(hist)-1]
-				if last.tick == tick || tick-last.tick <= 2 {
-					in.Forward, in.Back, in.Left, in.Right, in.Duck, in.Walk = movementFromMask(last.state)
-				}
-			}
 		}
 		throwMethod = formatThrowMethod(in)
 	} else {
