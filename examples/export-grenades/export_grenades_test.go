@@ -46,14 +46,14 @@ func TestRecordFromProjectile(t *testing.T) {
 	t.Run("nil projectile", func(t *testing.T) {
 		t.Parallel()
 
-		_, ok := recordFromProjectile("demo.dem", "de_mirage", nil)
+		_, ok := recordFromProjectile("demo.dem", "de_mirage", nil, throwSnapshot{})
 		assert.False(t, ok)
 	})
 
 	t.Run("missing weapon", func(t *testing.T) {
 		t.Parallel()
 
-		_, ok := recordFromProjectile("demo.dem", "de_mirage", &common.GrenadeProjectile{})
+		_, ok := recordFromProjectile("demo.dem", "de_mirage", &common.GrenadeProjectile{}, throwSnapshot{})
 		assert.False(t, ok)
 	})
 
@@ -64,11 +64,11 @@ func TestRecordFromProjectile(t *testing.T) {
 			WeaponInstance: &common.Equipment{Type: common.EqAK47},
 		}
 
-		_, ok := recordFromProjectile("demo.dem", "de_mirage", proj)
+		_, ok := recordFromProjectile("demo.dem", "de_mirage", proj, throwSnapshot{})
 		assert.False(t, ok)
 	})
 
-	t.Run("smoke with trajectory and thrower", func(t *testing.T) {
+	t.Run("smoke uses thrower pose not projectile start", func(t *testing.T) {
 		t.Parallel()
 
 		proj := &common.GrenadeProjectile{
@@ -80,14 +80,20 @@ func TestRecordFromProjectile(t *testing.T) {
 				{Position: r3.Vector{X: 7, Y: 8, Z: 9}},
 			},
 		}
+		snap := throwSnapshot{
+			ok:     true,
+			pos:    r3.Vector{X: 100, Y: 200, Z: 64},
+			angles: r3.Vector{X: 12.5, Y: 180, Z: 0},
+		}
 
-		rec, ok := recordFromProjectile("/tourney/match1/m1.dem", "de_dust2", proj)
+		rec, ok := recordFromProjectile("/tourney/match1/m1.dem", "de_dust2", proj, snap)
 		require.True(t, ok)
 		assert.Equal(t, "de_dust2", rec.Map)
 		assert.Equal(t, "/tourney/match1/m1.dem", rec.DemoPath)
 		assert.Equal(t, typeSmoke, rec.GrenadeType)
 		assert.Equal(t, "s1mple", rec.Thrower)
-		assert.Equal(t, r3.Vector{X: 1, Y: 2, Z: 3}, rec.Start)
+		assert.Equal(t, snap.pos, rec.Start)
+		assert.Equal(t, snap.angles, rec.ViewAngles)
 		assert.Equal(t, r3.Vector{X: 7, Y: 8, Z: 9}, rec.Detonate)
 		assert.Empty(t, rec.Category)
 	})
@@ -102,11 +108,11 @@ func TestRecordFromProjectile(t *testing.T) {
 			},
 		}
 
-		rec, ok := recordFromProjectile("a.dem", "de_nuke", proj)
+		rec, ok := recordFromProjectile("a.dem", "de_nuke", proj, throwSnapshot{})
 		require.True(t, ok)
 		assert.Equal(t, typeFlash, rec.GrenadeType)
 		assert.Empty(t, rec.Thrower)
-		assert.Equal(t, r3.Vector{X: 10, Y: 20, Z: 30}, rec.Start)
+		assert.Equal(t, r3.Vector{}, rec.Start)
 		assert.Equal(t, r3.Vector{X: 10, Y: 20, Z: 30}, rec.Detonate)
 	})
 }
@@ -121,6 +127,7 @@ func TestWriteCSV(t *testing.T) {
 			GrenadeType: typeSmoke,
 			Thrower:     "s1mple",
 			Start:       r3.Vector{X: 1.5, Y: 2.25, Z: 3},
+			ViewAngles:  r3.Vector{X: 10, Y: 90, Z: 0},
 			Detonate:    r3.Vector{X: 4, Y: 5, Z: 6.125},
 		},
 		{
@@ -147,7 +154,8 @@ func TestWriteCSV(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(got), "\n")
 	require.Len(t, lines, 3)
-	assert.Equal(t, "de_mirage,/tourney/liquid-vs-navi/m1-mirage.dem,烟,s1mple,1.500,2.250,3.000,4.000,5.000,6.125,", lines[1])
+	assert.Equal(t, "de_mirage,/tourney/liquid-vs-navi/m1-mirage.dem,烟,s1mple,1.500,2.250,3.000,10.000,90.000,0.000,4.000,5.000,6.125,", lines[1])
+	assert.Contains(t, got, "准星角度X")
 	assert.Contains(t, lines[2], "de_inferno")
 	assert.Contains(t, lines[2], "火")
 	assert.Contains(t, lines[2], `"ZywOo, the awper"`)
@@ -263,6 +271,14 @@ func TestExportTournamentCSV(t *testing.T) {
 	text := strings.TrimPrefix(string(data), "\uFEFF")
 	assert.True(t, strings.HasPrefix(text, strings.Join(csvHeader, ",")+"\n"))
 	assert.Contains(t, text, "道具种类")
+	assert.Contains(t, text, "准星角度X")
+
+	htmlPath := strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".html"
+	htmlData, err := os.ReadFile(htmlPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(htmlData), "复制")
+	assert.Contains(t, string(htmlData), "setpos ")
+	assert.Contains(t, string(htmlData), "setang ")
 
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	require.Greater(t, len(lines), 1, "expected at least one grenade row")
@@ -272,6 +288,42 @@ func TestExportTournamentCSV(t *testing.T) {
 	}
 
 	assert.Contains(t, stderr.String(), "exported")
+}
+
+func TestCopyPayload(t *testing.T) {
+	t.Parallel()
+
+	got := copyPayload(GrenadeRecord{
+		Start:      r3.Vector{X: 1.5, Y: 2.25, Z: 3},
+		ViewAngles: r3.Vector{X: 10, Y: 90, Z: 0},
+	})
+	assert.Equal(t, "setpos 1.500 2.250 3.000; setang 10.000 90.000 0.000", got)
+}
+
+func TestWriteHTML(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := writeHTML(&buf, []GrenadeRecord{{
+		Map:         "de_mirage",
+		GrenadeType: typeSmoke,
+		Thrower:     "s1mple",
+		Start:       r3.Vector{X: 1, Y: 2, Z: 3},
+		ViewAngles:  r3.Vector{X: 4, Y: 5, Z: 6},
+	}})
+	require.NoError(t, err)
+
+	got := buf.String()
+	assert.Contains(t, got, "charset=\"utf-8\"")
+	assert.Contains(t, got, "准星角度X")
+	assert.Contains(t, got, "复制")
+	assert.Contains(t, got, "setpos 1.000 2.000 3.000; setang 4.000 5.000 6.000")
+}
+
+func TestCaptureThrowSnapshotNil(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, throwSnapshot{}, captureThrowSnapshot(nil))
 }
 
 func TestIsDemoFile(t *testing.T) {

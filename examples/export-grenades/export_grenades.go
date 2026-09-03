@@ -40,6 +40,9 @@ var csvHeader = []string{
 	"起点X",
 	"起点Y",
 	"起点Z",
+	"准星角度X",
+	"准星角度Y",
+	"准星角度Z",
 	"爆点X",
 	"爆点Y",
 	"爆点Z",
@@ -52,9 +55,16 @@ type GrenadeRecord struct {
 	DemoPath    string
 	GrenadeType string
 	Thrower     string
-	Start       r3.Vector
+	Start       r3.Vector // thrower position at throw time
+	ViewAngles  r3.Vector // eye angles (pitch/yaw/roll) at throw time
 	Detonate    r3.Vector
 	Category    string
+}
+
+type throwSnapshot struct {
+	pos    r3.Vector
+	angles r3.Vector
+	ok     bool
 }
 
 type options struct {
@@ -141,6 +151,20 @@ func exportGrenades(opts options, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	if opts.out != "" {
+		htmlPath := strings.TrimSuffix(opts.out, filepath.Ext(opts.out)) + ".html"
+
+		htmlErr := writeHTMLFile(htmlPath, records)
+		if htmlErr != nil {
+			return htmlErr
+		}
+
+		fmt.Fprintf(stderr, "exported %d grenades from %d demos\n", len(records), len(demoPaths))
+		fmt.Fprintf(stderr, "HTML (with copy buttons): %s\n", htmlPath)
+
+		return nil
+	}
+
 	fmt.Fprintf(stderr, "exported %d grenades from %d demos\n", len(records), len(demoPaths))
 
 	return nil
@@ -204,6 +228,8 @@ func parseDemoGrenades(demoPath string) ([]GrenadeRecord, error) {
 		records []GrenadeRecord
 	)
 
+	throws := make(map[int64]throwSnapshot)
+
 	err := demoinfocs.ParseFile(demoPath, func(p demoinfocs.Parser) error {
 		p.RegisterNetMessageHandler(func(m *msg.CDemoFileHeader) {
 			if name := m.GetMapName(); name != "" {
@@ -217,8 +243,21 @@ func parseDemoGrenades(demoPath string) ([]GrenadeRecord, error) {
 			}
 		})
 
+		p.RegisterEventHandler(func(e events.GrenadeProjectileThrow) {
+			if e.Projectile == nil {
+				return
+			}
+
+			throws[e.Projectile.UniqueID()] = captureThrowSnapshot(e.Projectile.Thrower)
+		})
+
 		p.RegisterEventHandler(func(e events.GrenadeProjectileDestroy) {
-			rec, ok := recordFromProjectile(demoPath, mapName, e.Projectile)
+			var snap throwSnapshot
+			if e.Projectile != nil {
+				snap = throws[e.Projectile.UniqueID()]
+			}
+
+			rec, ok := recordFromProjectile(demoPath, mapName, e.Projectile, snap)
 			if !ok {
 				return
 			}
@@ -235,7 +274,7 @@ func parseDemoGrenades(demoPath string) ([]GrenadeRecord, error) {
 	return records, nil
 }
 
-func recordFromProjectile(demoPath, mapName string, proj *common.GrenadeProjectile) (GrenadeRecord, bool) {
+func recordFromProjectile(demoPath, mapName string, proj *common.GrenadeProjectile, snap throwSnapshot) (GrenadeRecord, bool) {
 	if proj == nil || proj.WeaponInstance == nil {
 		return GrenadeRecord{}, false
 	}
@@ -245,12 +284,12 @@ func recordFromProjectile(demoPath, mapName string, proj *common.GrenadeProjecti
 		return GrenadeRecord{}, false
 	}
 
-	start, detonate := trajectoryEndpoints(proj)
-
 	thrower := ""
 	if proj.Thrower != nil {
 		thrower = proj.Thrower.Name
 	}
+
+	start, angles := throwerPose(proj.Thrower, snap)
 
 	return GrenadeRecord{
 		Map:         mapName,
@@ -258,23 +297,63 @@ func recordFromProjectile(demoPath, mapName string, proj *common.GrenadeProjecti
 		GrenadeType: label,
 		Thrower:     thrower,
 		Start:       start,
-		Detonate:    detonate,
+		ViewAngles:  angles,
+		Detonate:    detonatePosition(proj),
 	}, true
 }
 
-func trajectoryEndpoints(proj *common.GrenadeProjectile) (start, detonate r3.Vector) {
-	if len(proj.Trajectory) > 0 {
-		start = proj.Trajectory[0].Position
-		detonate = proj.Trajectory[len(proj.Trajectory)-1].Position
+func throwerPose(thrower *common.Player, snap throwSnapshot) (pos, angles r3.Vector) {
+	if snap.ok {
+		return snap.pos, snap.angles
+	}
 
-		return start, detonate
+	if thrower == nil {
+		return r3.Vector{}, r3.Vector{}
+	}
+
+	fallback := captureThrowSnapshot(thrower)
+
+	return fallback.pos, fallback.angles
+}
+
+func captureThrowSnapshot(thrower *common.Player) throwSnapshot {
+	if thrower == nil {
+		return throwSnapshot{}
+	}
+
+	snap := throwSnapshot{
+		ok:  true,
+		pos: thrower.Position(),
+		angles: r3.Vector{
+			X: float64(thrower.ViewDirectionY()),
+			Y: float64(thrower.ViewDirectionX()),
+		},
+	}
+
+	if pawn := thrower.PlayerPawnEntity(); pawn != nil {
+		if val, ok := pawn.PropertyValue("m_angEyeAngles"); ok && val.Any != nil {
+			snap.angles = val.R3Vec()
+		}
+	}
+
+	return snap
+}
+
+func detonatePosition(proj *common.GrenadeProjectile) r3.Vector {
+	if len(proj.Trajectory) > 0 {
+		return proj.Trajectory[len(proj.Trajectory)-1].Position
 	}
 
 	if proj.Entity != nil {
-		detonate = proj.Position()
+		return proj.Position()
 	}
 
-	return start, detonate
+	return r3.Vector{}
+}
+
+func copyPayload(rec GrenadeRecord) string {
+	return "setpos " + formatCoord(rec.Start.X) + " " + formatCoord(rec.Start.Y) + " " + formatCoord(rec.Start.Z) +
+		"; setang " + formatCoord(rec.ViewAngles.X) + " " + formatCoord(rec.ViewAngles.Y) + " " + formatCoord(rec.ViewAngles.Z)
 }
 
 func grenadeTypeLabel(t common.EquipmentType) (string, bool) {
@@ -317,10 +396,13 @@ func writeCSV(w io.Writer, records []GrenadeRecord) error {
 		row[4] = formatCoord(rec.Start.X)
 		row[5] = formatCoord(rec.Start.Y)
 		row[6] = formatCoord(rec.Start.Z)
-		row[7] = formatCoord(rec.Detonate.X)
-		row[8] = formatCoord(rec.Detonate.Y)
-		row[9] = formatCoord(rec.Detonate.Z)
-		row[10] = rec.Category
+		row[7] = formatCoord(rec.ViewAngles.X)
+		row[8] = formatCoord(rec.ViewAngles.Y)
+		row[9] = formatCoord(rec.ViewAngles.Z)
+		row[10] = formatCoord(rec.Detonate.X)
+		row[11] = formatCoord(rec.Detonate.Y)
+		row[12] = formatCoord(rec.Detonate.Z)
+		row[13] = rec.Category
 
 		err = cw.Write(row)
 		if err != nil {
