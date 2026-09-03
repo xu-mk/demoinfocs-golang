@@ -37,12 +37,14 @@ Omit `-out` to write the CSV to stdout. Progress messages always go to stderr.
 
 | Column | Description |
 |-|-|
-| 地图 | Map name (e.g. `de_mirage`) |
-| demo路径 | Absolute path of the demo file |
-| 种类 | Grenade type: `烟` (smoke), `闪` (flash), `雷` (HE), `火` (molotov / incendiary), `诱饵弹` (decoy) |
-| 投掷者 | Thrower name |
+| 道具所属地图 | Map name (e.g. `de_mirage`) |
+| 道具所属demo | Absolute path of the demo file |
+| 道具种类 | `烟` / `闪` / `雷` / `火` (molotov + incendiary) / `诱饵弹` |
+| 道具投掷者 | Thrower name |
 | 起点X / 起点Y / 起点Z | Throw / start coordinates |
 | 爆点X / 爆点Y / 爆点Z | Detonation coordinates |
-| 分类 | Empty, reserved for annotation |
+| 道具分类 | Empty, reserved for annotation |
+
+The file is UTF-8 with BOM so Excel / WPS on Windows shows Chinese headers correctly.
 
 Molotov and incendiary grenades are both exported as `火`.

@@ -29,18 +29,21 @@ const (
 	typeDecoy = "诱饵弹"
 )
 
+// utf8BOM lets Excel / WPS on Windows detect UTF-8 and show Chinese headers correctly.
+const utf8BOM = "\uFEFF"
+
 var csvHeader = []string{
-	"地图",
-	"demo路径",
-	"种类",
-	"投掷者",
+	"道具所属地图",
+	"道具所属demo",
+	"道具种类",
+	"道具投掷者",
 	"起点X",
 	"起点Y",
 	"起点Z",
 	"爆点X",
 	"爆点Y",
 	"爆点Z",
-	"分类",
+	"道具分类",
 }
 
 // GrenadeRecord is one thrown grenade, ready for CSV export / annotation.
@@ -292,9 +295,14 @@ func grenadeTypeLabel(t common.EquipmentType) (string, bool) {
 }
 
 func writeCSV(w io.Writer, records []GrenadeRecord) error {
+	_, err := io.WriteString(w, utf8BOM)
+	if err != nil {
+		return fmt.Errorf("failed to write UTF-8 BOM: %w", err)
+	}
+
 	cw := csv.NewWriter(w)
 
-	err := cw.Write(csvHeader)
+	err = cw.Write(csvHeader)
 	if err != nil {
 		return fmt.Errorf("failed to write CSV header: %w", err)
 	}

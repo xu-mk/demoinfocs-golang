@@ -138,8 +138,12 @@ func TestWriteCSV(t *testing.T) {
 	err := writeCSV(&buf, records)
 	require.NoError(t, err)
 
-	got := buf.String()
+	raw := buf.Bytes()
+	require.True(t, bytes.HasPrefix(raw, []byte{0xEF, 0xBB, 0xBF}), "CSV must start with UTF-8 BOM for Excel")
+
+	got := strings.TrimPrefix(buf.String(), "\uFEFF")
 	assert.True(t, strings.HasPrefix(got, strings.Join(csvHeader, ",")+"\n"))
+	assert.Contains(t, got, "道具种类")
 
 	lines := strings.Split(strings.TrimSpace(got), "\n")
 	require.Len(t, lines, 3)
@@ -254,8 +258,11 @@ func TestExportTournamentCSV(t *testing.T) {
 	data, err := os.ReadFile(outFile)
 	require.NoError(t, err)
 
-	text := string(data)
+	require.True(t, bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}), "CSV must start with UTF-8 BOM for Excel")
+
+	text := strings.TrimPrefix(string(data), "\uFEFF")
 	assert.True(t, strings.HasPrefix(text, strings.Join(csvHeader, ",")+"\n"))
+	assert.Contains(t, text, "道具种类")
 
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	require.Greater(t, len(lines), 1, "expected at least one grenade row")
