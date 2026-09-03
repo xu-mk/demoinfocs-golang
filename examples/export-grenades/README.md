@@ -38,20 +38,15 @@ Omit `-out` to write the CSV to stdout. Progress messages always go to stderr.
 | Column | Description |
 |-|-|
 | 道具所属地图 | Map name (e.g. `de_mirage`) |
-| 道具所属demo | Absolute path of the demo file |
+| 道具所属demo | Demo path relative to `-dir` / the demo file's parent |
 | 道具种类 | `烟` / `闪` / `雷` / `火` (molotov + incendiary) / `诱饵弹` |
 | 道具投掷者 | Thrower name |
 | 起点X / 起点Y / 起点Z | Thrower position at throw time |
-| 准星角度X / Y / Z | Eye angles at throw time (`m_angEyeAngles`: pitch / yaw / roll) |
+| 准星角度X / 准星角度Y | Eye angles at throw time (pitch / yaw) |
 | 爆点X / 爆点Y / 爆点Z | Detonation coordinates |
 | 道具分类 | Empty, reserved for annotation |
+| setpos/setang | `setpos <x> <y> <z>; setang <pitch> <yaw>` |
 
 The file is UTF-8 with BOM so Excel / WPS on Windows shows Chinese headers correctly.
-
-When `-out` is set, a companion `.html` file is also written. Open it in a browser and use the **复制** button on each row to copy:
-
-```
-setpos <x> <y> <z>; setang <pitch> <yaw> <roll>
-```
 
 Molotov and incendiary grenades are both exported as `火`.

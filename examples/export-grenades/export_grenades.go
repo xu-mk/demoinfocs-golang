@@ -42,11 +42,11 @@ var csvHeader = []string{
 	"起点Z",
 	"准星角度X",
 	"准星角度Y",
-	"准星角度Z",
 	"爆点X",
 	"爆点Y",
 	"爆点Z",
 	"道具分类",
+	"setpos/setang",
 }
 
 // GrenadeRecord is one thrown grenade, ready for CSV export / annotation.
@@ -65,6 +65,11 @@ type throwSnapshot struct {
 	pos    r3.Vector
 	angles r3.Vector
 	ok     bool
+}
+
+type demoRef struct {
+	abs string
+	rel string
 }
 
 type options struct {
@@ -112,23 +117,23 @@ func exportGrenades(opts options, stdout, stderr io.Writer) error {
 		root = opts.demo
 	}
 
-	demoPaths, err := collectDemoPaths(root)
+	demos, err := collectDemoPaths(root)
 	if err != nil {
 		return err
 	}
 
-	if len(demoPaths) == 0 {
+	if len(demos) == 0 {
 		return fmt.Errorf("no .dem files found under %s", root)
 	}
 
-	records := make([]GrenadeRecord, 0, len(demoPaths)*32)
+	records := make([]GrenadeRecord, 0, len(demos)*32)
 
-	for i, demoPath := range demoPaths {
-		fmt.Fprintf(stderr, "parsing %d/%d: %s\n", i+1, len(demoPaths), demoPath)
+	for i, demo := range demos {
+		fmt.Fprintf(stderr, "parsing %d/%d: %s\n", i+1, len(demos), demo.rel)
 
-		demoRecords, parseErr := parseDemoGrenades(demoPath)
+		demoRecords, parseErr := parseDemoGrenades(demo.abs, demo.rel)
 		if parseErr != nil {
-			return fmt.Errorf("failed to parse %s: %w", demoPath, parseErr)
+			return fmt.Errorf("failed to parse %s: %w", demo.rel, parseErr)
 		}
 
 		records = append(records, demoRecords...)
@@ -151,26 +156,12 @@ func exportGrenades(opts options, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	if opts.out != "" {
-		htmlPath := strings.TrimSuffix(opts.out, filepath.Ext(opts.out)) + ".html"
-
-		htmlErr := writeHTMLFile(htmlPath, records)
-		if htmlErr != nil {
-			return htmlErr
-		}
-
-		fmt.Fprintf(stderr, "exported %d grenades from %d demos\n", len(records), len(demoPaths))
-		fmt.Fprintf(stderr, "HTML (with copy buttons): %s\n", htmlPath)
-
-		return nil
-	}
-
-	fmt.Fprintf(stderr, "exported %d grenades from %d demos\n", len(records), len(demoPaths))
+	fmt.Fprintf(stderr, "exported %d grenades from %d demos\n", len(records), len(demos))
 
 	return nil
 }
 
-func collectDemoPaths(root string) ([]string, error) {
+func collectDemoPaths(root string) ([]demoRef, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat %s: %w", root, err)
@@ -181,15 +172,15 @@ func collectDemoPaths(root string) ([]string, error) {
 			return nil, fmt.Errorf("not a .dem file: %s", root)
 		}
 
-		abs, absErr := filepath.Abs(root)
-		if absErr != nil {
-			return nil, absErr
+		ref, refErr := newDemoRef(root, root)
+		if refErr != nil {
+			return nil, refErr
 		}
 
-		return []string{abs}, nil
+		return []demoRef{ref}, nil
 	}
 
-	var paths []string
+	var refs []demoRef
 
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -200,12 +191,12 @@ func collectDemoPaths(root string) ([]string, error) {
 			return nil
 		}
 
-		abs, absErr := filepath.Abs(path)
-		if absErr != nil {
-			return absErr
+		ref, refErr := newDemoRef(root, path)
+		if refErr != nil {
+			return refErr
 		}
 
-		paths = append(paths, abs)
+		refs = append(refs, ref)
 
 		return nil
 	})
@@ -213,16 +204,52 @@ func collectDemoPaths(root string) ([]string, error) {
 		return nil, fmt.Errorf("failed to walk %s: %w", root, err)
 	}
 
-	sort.Strings(paths)
+	sort.Slice(refs, func(i, j int) bool {
+		return refs[i].rel < refs[j].rel
+	})
 
-	return paths, nil
+	return refs, nil
+}
+
+func newDemoRef(root, path string) (demoRef, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return demoRef{}, err
+	}
+
+	rel, err := relativeDemoPath(root, abs)
+	if err != nil {
+		return demoRef{}, err
+	}
+
+	return demoRef{abs: abs, rel: rel}, nil
+}
+
+func relativeDemoPath(root, absPath string) (string, error) {
+	info, err := os.Stat(root)
+	base := root
+	if err == nil && !info.IsDir() {
+		base = filepath.Dir(root)
+	}
+
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", err
+	}
+
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil {
+		return filepath.ToSlash(absPath), nil
+	}
+
+	return filepath.ToSlash(rel), nil
 }
 
 func isDemoFile(path string) bool {
 	return strings.EqualFold(filepath.Ext(path), ".dem")
 }
 
-func parseDemoGrenades(demoPath string) ([]GrenadeRecord, error) {
+func parseDemoGrenades(absPath, relPath string) ([]GrenadeRecord, error) {
 	var (
 		mapName string
 		records []GrenadeRecord
@@ -230,7 +257,7 @@ func parseDemoGrenades(demoPath string) ([]GrenadeRecord, error) {
 
 	throws := make(map[int64]throwSnapshot)
 
-	err := demoinfocs.ParseFile(demoPath, func(p demoinfocs.Parser) error {
+	err := demoinfocs.ParseFile(absPath, func(p demoinfocs.Parser) error {
 		p.RegisterNetMessageHandler(func(m *msg.CDemoFileHeader) {
 			if name := m.GetMapName(); name != "" {
 				mapName = name
@@ -257,7 +284,7 @@ func parseDemoGrenades(demoPath string) ([]GrenadeRecord, error) {
 				snap = throws[e.Projectile.UniqueID()]
 			}
 
-			rec, ok := recordFromProjectile(demoPath, mapName, e.Projectile, snap)
+			rec, ok := recordFromProjectile(relPath, mapName, e.Projectile, snap)
 			if !ok {
 				return
 			}
@@ -353,7 +380,7 @@ func detonatePosition(proj *common.GrenadeProjectile) r3.Vector {
 
 func copyPayload(rec GrenadeRecord) string {
 	return "setpos " + formatCoord(rec.Start.X) + " " + formatCoord(rec.Start.Y) + " " + formatCoord(rec.Start.Z) +
-		"; setang " + formatCoord(rec.ViewAngles.X) + " " + formatCoord(rec.ViewAngles.Y) + " " + formatCoord(rec.ViewAngles.Z)
+		"; setang " + formatCoord(rec.ViewAngles.X) + " " + formatCoord(rec.ViewAngles.Y)
 }
 
 func grenadeTypeLabel(t common.EquipmentType) (string, bool) {
@@ -398,11 +425,11 @@ func writeCSV(w io.Writer, records []GrenadeRecord) error {
 		row[6] = formatCoord(rec.Start.Z)
 		row[7] = formatCoord(rec.ViewAngles.X)
 		row[8] = formatCoord(rec.ViewAngles.Y)
-		row[9] = formatCoord(rec.ViewAngles.Z)
-		row[10] = formatCoord(rec.Detonate.X)
-		row[11] = formatCoord(rec.Detonate.Y)
-		row[12] = formatCoord(rec.Detonate.Z)
-		row[13] = rec.Category
+		row[9] = formatCoord(rec.Detonate.X)
+		row[10] = formatCoord(rec.Detonate.Y)
+		row[11] = formatCoord(rec.Detonate.Z)
+		row[12] = rec.Category
+		row[13] = copyPayload(rec)
 
 		err = cw.Write(row)
 		if err != nil {

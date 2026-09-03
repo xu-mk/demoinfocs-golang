@@ -123,7 +123,7 @@ func TestWriteCSV(t *testing.T) {
 	records := []GrenadeRecord{
 		{
 			Map:         "de_mirage",
-			DemoPath:    "/tourney/liquid-vs-navi/m1-mirage.dem",
+			DemoPath:    "liquid-vs-navi/m1-mirage.dem",
 			GrenadeType: typeSmoke,
 			Thrower:     "s1mple",
 			Start:       r3.Vector{X: 1.5, Y: 2.25, Z: 3},
@@ -154,12 +154,14 @@ func TestWriteCSV(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(got), "\n")
 	require.Len(t, lines, 3)
-	assert.Equal(t, "de_mirage,/tourney/liquid-vs-navi/m1-mirage.dem,烟,s1mple,1.500,2.250,3.000,10.000,90.000,0.000,4.000,5.000,6.125,", lines[1])
+	assert.Equal(t, "de_mirage,liquid-vs-navi/m1-mirage.dem,烟,s1mple,1.500,2.250,3.000,10.000,90.000,4.000,5.000,6.125,,setpos 1.500 2.250 3.000; setang 10.000 90.000", lines[1])
 	assert.Contains(t, got, "准星角度X")
+	assert.NotContains(t, got, "准星角度Z")
+	assert.Contains(t, got, "setpos/setang")
 	assert.Contains(t, lines[2], "de_inferno")
 	assert.Contains(t, lines[2], "火")
 	assert.Contains(t, lines[2], `"ZywOo, the awper"`)
-	assert.True(t, strings.HasSuffix(lines[2], ","))
+	assert.Contains(t, lines[2], "setpos -100.000 0.000 64.000; setang 0.000 0.000")
 }
 
 func TestCollectDemoPaths(t *testing.T) {
@@ -186,16 +188,22 @@ func TestCollectDemoPaths(t *testing.T) {
 		require.NoError(t, os.WriteFile(f, []byte("demo"), 0o600))
 	}
 
-	paths, err := collectDemoPaths(root)
+	refs, err := collectDemoPaths(root)
 	require.NoError(t, err)
-	require.Len(t, paths, 4)
+	require.Len(t, refs, 4)
 
-	for _, p := range paths {
-		assert.True(t, isDemoFile(p))
-		assert.True(t, filepath.IsAbs(p))
+	rels := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		assert.True(t, isDemoFile(ref.abs))
+		assert.True(t, filepath.IsAbs(ref.abs))
+		assert.False(t, filepath.IsAbs(ref.rel))
+		rels = append(rels, ref.rel)
 	}
 
-	assert.True(t, isSorted(paths))
+	assert.Contains(t, rels, "liquid-vs-navi/m1-mirage.dem")
+	assert.Contains(t, rels, "faze-vs-vitality/m1-anubis.dem")
+	assert.Contains(t, rels, "faze-vs-vitality/extra/m2-dust2.dem")
+	assert.True(t, isSorted(rels))
 }
 
 func TestCollectDemoPathsSingleFile(t *testing.T) {
@@ -205,10 +213,11 @@ func TestCollectDemoPathsSingleFile(t *testing.T) {
 	demo := filepath.Join(dir, "solo.dem")
 	require.NoError(t, os.WriteFile(demo, []byte("demo"), 0o600))
 
-	paths, err := collectDemoPaths(demo)
+	refs, err := collectDemoPaths(demo)
 	require.NoError(t, err)
-	require.Len(t, paths, 1)
-	assert.True(t, filepath.IsAbs(paths[0]))
+	require.Len(t, refs, 1)
+	assert.True(t, filepath.IsAbs(refs[0].abs))
+	assert.Equal(t, "solo.dem", refs[0].rel)
 
 	_, err = collectDemoPaths(filepath.Join(dir, "notes.txt"))
 	assert.Error(t, err)
@@ -272,20 +281,19 @@ func TestExportTournamentCSV(t *testing.T) {
 	assert.True(t, strings.HasPrefix(text, strings.Join(csvHeader, ",")+"\n"))
 	assert.Contains(t, text, "道具种类")
 	assert.Contains(t, text, "准星角度X")
+	assert.NotContains(t, text, "准星角度Z")
+	assert.Contains(t, text, "setpos/setang")
+	assert.Contains(t, text, "match-1/s2.dem")
+	assert.NotContains(t, text, absDemo)
+	assert.Contains(t, text, "setpos ")
+	assert.Contains(t, text, "setang ")
 
 	htmlPath := strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".html"
-	htmlData, err := os.ReadFile(htmlPath)
-	require.NoError(t, err)
-	assert.Contains(t, string(htmlData), "复制")
-	assert.Contains(t, string(htmlData), "setpos ")
-	assert.Contains(t, string(htmlData), "setang ")
+	_, htmlErr := os.Stat(htmlPath)
+	assert.True(t, os.IsNotExist(htmlErr))
 
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	require.Greater(t, len(lines), 1, "expected at least one grenade row")
-
-	for _, line := range lines[1:] {
-		assert.True(t, strings.HasSuffix(line, ",") || strings.Contains(line, ",,"), "category column should be empty: %s", line)
-	}
 
 	assert.Contains(t, stderr.String(), "exported")
 }
@@ -297,27 +305,7 @@ func TestCopyPayload(t *testing.T) {
 		Start:      r3.Vector{X: 1.5, Y: 2.25, Z: 3},
 		ViewAngles: r3.Vector{X: 10, Y: 90, Z: 0},
 	})
-	assert.Equal(t, "setpos 1.500 2.250 3.000; setang 10.000 90.000 0.000", got)
-}
-
-func TestWriteHTML(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	err := writeHTML(&buf, []GrenadeRecord{{
-		Map:         "de_mirage",
-		GrenadeType: typeSmoke,
-		Thrower:     "s1mple",
-		Start:       r3.Vector{X: 1, Y: 2, Z: 3},
-		ViewAngles:  r3.Vector{X: 4, Y: 5, Z: 6},
-	}})
-	require.NoError(t, err)
-
-	got := buf.String()
-	assert.Contains(t, got, "charset=\"utf-8\"")
-	assert.Contains(t, got, "准星角度X")
-	assert.Contains(t, got, "复制")
-	assert.Contains(t, got, "setpos 1.000 2.000 3.000; setang 4.000 5.000 6.000")
+	assert.Equal(t, "setpos 1.500 2.250 3.000; setang 10.000 90.000", got)
 }
 
 func TestCaptureThrowSnapshotNil(t *testing.T) {
