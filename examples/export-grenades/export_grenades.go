@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/csv"
 	"flag"
 	"fmt"
@@ -73,9 +74,10 @@ type demoRef struct {
 }
 
 type options struct {
-	dir  string
-	demo string
-	out  string
+	dir       string
+	demo      string
+	out       string
+	overwrite bool
 }
 
 // Run like this:
@@ -97,13 +99,14 @@ func parseArgs(args []string) (options, error) {
 	dir := fs.String("dir", "", "Tournament demo directory (match folders containing .dem files)")
 	demo := fs.String("demo", "", "Single demo file path")
 	out := fs.String("out", "", "Output CSV path (default: stdout)")
+	overwrite := fs.Bool("overwrite", false, "Overwrite existing CSV instead of resuming")
 
 	err := fs.Parse(args)
 	if err != nil {
 		return options{}, err
 	}
 
-	opts := options{dir: *dir, demo: *demo, out: *out}
+	opts := options{dir: *dir, demo: *demo, out: *out, overwrite: *overwrite}
 	if opts.dir == "" && opts.demo == "" {
 		return options{}, fmt.Errorf("either -dir or -demo is required")
 	}
@@ -126,37 +129,57 @@ func exportGrenades(opts options, stdout, stderr io.Writer) error {
 		return fmt.Errorf("no .dem files found under %s", root)
 	}
 
-	records := make([]GrenadeRecord, 0, len(demos)*32)
+	sink, done, closer, err := setupOutput(opts, stdout)
+	if err != nil {
+		return err
+	}
+	if closer != nil {
+		defer closer()
+	}
+
+	var (
+		nGrenades int
+		nParsed   int
+		nSkipped  int
+		nFailed   int
+	)
 
 	for i, demo := range demos {
+		if _, ok := done[demo.rel]; ok {
+			nSkipped++
+			fmt.Fprintf(stderr, "skip %d/%d (already exported): %s\n", i+1, len(demos), demo.rel)
+
+			continue
+		}
+
 		fmt.Fprintf(stderr, "parsing %d/%d: %s\n", i+1, len(demos), demo.rel)
 
 		demoRecords, parseErr := parseDemoGrenades(demo.abs, demo.rel)
 		if parseErr != nil {
-			return fmt.Errorf("failed to parse %s: %w", demo.rel, parseErr)
+			nFailed++
+			fmt.Fprintf(stderr, "error %d/%d %s: %v\n", i+1, len(demos), demo.rel, parseErr)
+
+			continue
 		}
 
-		records = append(records, demoRecords...)
-	}
-
-	var out io.Writer = stdout
-
-	if opts.out != "" {
-		f, createErr := os.Create(opts.out)
-		if createErr != nil {
-			return fmt.Errorf("failed to create output file: %w", createErr)
+		writeErr := sink.writeRecords(demoRecords)
+		if writeErr != nil {
+			return writeErr
 		}
-		defer f.Close()
 
-		out = f
+		if opts.out != "" {
+			progressErr := appendProgress(progressPath(opts.out), demo.rel)
+			if progressErr != nil {
+				return progressErr
+			}
+		}
+
+		done[demo.rel] = struct{}{}
+		nGrenades += len(demoRecords)
+		nParsed++
 	}
 
-	err = writeCSV(out, records)
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(stderr, "exported %d grenades from %d demos\n", len(records), len(demos))
+	fmt.Fprintf(stderr, "exported %d grenades from %d demos (skipped %d, failed %d)\n", nGrenades, nParsed, nSkipped, nFailed)
 
 	return nil
 }
@@ -400,51 +423,249 @@ func grenadeTypeLabel(t common.EquipmentType) (string, bool) {
 	}
 }
 
-func writeCSV(w io.Writer, records []GrenadeRecord) error {
-	_, err := io.WriteString(w, utf8BOM)
-	if err != nil {
-		return fmt.Errorf("failed to write UTF-8 BOM: %w", err)
+func progressPath(outPath string) string {
+	return outPath + ".progress"
+}
+
+func setupOutput(opts options, stdout io.Writer) (*csvSink, map[string]struct{}, func() error, error) {
+	if opts.out == "" {
+		sink, err := newCSVSink(stdout, true)
+		return sink, map[string]struct{}{}, nil, err
 	}
 
-	cw := csv.NewWriter(w)
-
-	err = cw.Write(csvHeader)
-	if err != nil {
-		return fmt.Errorf("failed to write CSV header: %w", err)
+	if opts.overwrite {
+		_ = os.Remove(progressPath(opts.out))
 	}
 
-	row := make([]string, len(csvHeader))
+	info, statErr := os.Stat(opts.out)
+	exists := statErr == nil && info.Size() > 0
 
+	if exists && !opts.overwrite {
+		done, loadErr := loadCompletedDemos(opts.out, progressPath(opts.out))
+		if loadErr != nil {
+			return nil, nil, nil, loadErr
+		}
+
+		f, openErr := os.OpenFile(opts.out, os.O_APPEND|os.O_WRONLY, 0o644)
+		if openErr != nil {
+			return nil, nil, nil, fmt.Errorf("failed to open output file: %w", openErr)
+		}
+
+		sink, sinkErr := newCSVSink(f, false)
+		if sinkErr != nil {
+			f.Close()
+			return nil, nil, nil, sinkErr
+		}
+
+		return sink, done, f.Close, nil
+	}
+
+	f, createErr := os.Create(opts.out)
+	if createErr != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create output file: %w", createErr)
+	}
+
+	sink, sinkErr := newCSVSink(f, true)
+	if sinkErr != nil {
+		f.Close()
+		return nil, nil, nil, sinkErr
+	}
+
+	return sink, map[string]struct{}{}, f.Close, nil
+}
+
+func loadCompletedDemos(csvPath, progressFile string) (map[string]struct{}, error) {
+	done := make(map[string]struct{})
+
+	if err := loadCompletedFromCSV(csvPath, done); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	if err := loadCompletedFromProgress(progressFile, done); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	return done, nil
+}
+
+func loadCompletedFromCSV(path string, done map[string]struct{}) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(stripBOM(f))
+	r.FieldsPerRecord = -1
+
+	header, err := r.Read()
+	if err != nil {
+		if err == io.EOF {
+			return nil
+		}
+
+		return fmt.Errorf("failed to read CSV header: %w", err)
+	}
+
+	demoCol := indexOf(header, "道具所属demo")
+	if demoCol < 0 {
+		return nil
+	}
+
+	for {
+		row, readErr := r.Read()
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("failed to read CSV: %w", readErr)
+		}
+
+		if demoCol < len(row) && row[demoCol] != "" {
+			done[row[demoCol]] = struct{}{}
+		}
+	}
+}
+
+func loadCompletedFromProgress(path string, done map[string]struct{}) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			done[line] = struct{}{}
+		}
+	}
+
+	return nil
+}
+
+func appendProgress(path, rel string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("failed to update progress file: %w", err)
+	}
+	defer f.Close()
+
+	_, err = fmt.Fprintln(f, rel)
+	if err != nil {
+		return fmt.Errorf("failed to write progress file: %w", err)
+	}
+
+	return f.Sync()
+}
+
+func stripBOM(r io.Reader) io.Reader {
+	br := bufio.NewReader(r)
+	if peek, err := br.Peek(3); err == nil && len(peek) == 3 && peek[0] == 0xEF && peek[1] == 0xBB && peek[2] == 0xBF {
+		_, _ = br.Discard(3)
+	}
+
+	return br
+}
+
+func indexOf(vals []string, want string) int {
+	for i, v := range vals {
+		if v == want {
+			return i
+		}
+	}
+
+	return -1
+}
+
+type csvSink struct {
+	cw   *csv.Writer
+	sync func() error
+	row  []string
+}
+
+func newCSVSink(w io.Writer, writeHeader bool) (*csvSink, error) {
+	if writeHeader {
+		_, err := io.WriteString(w, utf8BOM)
+		if err != nil {
+			return nil, fmt.Errorf("failed to write UTF-8 BOM: %w", err)
+		}
+	}
+
+	sink := &csvSink{
+		cw:  csv.NewWriter(w),
+		row: make([]string, len(csvHeader)),
+	}
+
+	if f, ok := w.(*os.File); ok {
+		sink.sync = f.Sync
+	}
+
+	if writeHeader {
+		err := sink.cw.Write(csvHeader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to write CSV header: %w", err)
+		}
+
+		err = sink.flush()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return sink, nil
+}
+
+func (s *csvSink) writeRecords(records []GrenadeRecord) error {
 	for _, rec := range records {
-		row[0] = rec.Map
-		row[1] = rec.DemoPath
-		row[2] = rec.GrenadeType
-		row[3] = rec.Thrower
-		row[4] = formatCoord(rec.Start.X)
-		row[5] = formatCoord(rec.Start.Y)
-		row[6] = formatCoord(rec.Start.Z)
-		row[7] = formatCoord(rec.ViewAngles.X)
-		row[8] = formatCoord(rec.ViewAngles.Y)
-		row[9] = formatCoord(rec.Detonate.X)
-		row[10] = formatCoord(rec.Detonate.Y)
-		row[11] = formatCoord(rec.Detonate.Z)
-		row[12] = rec.Category
-		row[13] = copyPayload(rec)
+		s.row[0] = rec.Map
+		s.row[1] = rec.DemoPath
+		s.row[2] = rec.GrenadeType
+		s.row[3] = rec.Thrower
+		s.row[4] = formatCoord(rec.Start.X)
+		s.row[5] = formatCoord(rec.Start.Y)
+		s.row[6] = formatCoord(rec.Start.Z)
+		s.row[7] = formatCoord(rec.ViewAngles.X)
+		s.row[8] = formatCoord(rec.ViewAngles.Y)
+		s.row[9] = formatCoord(rec.Detonate.X)
+		s.row[10] = formatCoord(rec.Detonate.Y)
+		s.row[11] = formatCoord(rec.Detonate.Z)
+		s.row[12] = rec.Category
+		s.row[13] = copyPayload(rec)
 
-		err = cw.Write(row)
+		err := s.cw.Write(s.row)
 		if err != nil {
 			return fmt.Errorf("failed to write CSV row: %w", err)
 		}
 	}
 
-	cw.Flush()
+	return s.flush()
+}
 
-	err = cw.Error()
+func (s *csvSink) flush() error {
+	s.cw.Flush()
+
+	err := s.cw.Error()
 	if err != nil {
 		return fmt.Errorf("failed to flush CSV: %w", err)
 	}
 
+	if s.sync != nil {
+		err = s.sync()
+		if err != nil {
+			return fmt.Errorf("failed to sync CSV: %w", err)
+		}
+	}
+
 	return nil
+}
+
+func writeCSV(w io.Writer, records []GrenadeRecord) error {
+	sink, err := newCSVSink(w, true)
+	if err != nil {
+		return err
+	}
+
+	return sink.writeRecords(records)
 }
 
 func formatCoord(v float64) string {

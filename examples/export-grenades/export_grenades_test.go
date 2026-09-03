@@ -237,6 +237,11 @@ func TestParseArgs(t *testing.T) {
 	opts, err = parseArgs([]string{"-demo", "a.dem"})
 	require.NoError(t, err)
 	assert.Equal(t, "a.dem", opts.demo)
+	assert.False(t, opts.overwrite)
+
+	opts, err = parseArgs([]string{"-dir", "/tourney", "-out", "out.csv", "-overwrite"})
+	require.NoError(t, err)
+	assert.True(t, opts.overwrite)
 }
 
 func TestExportGrenadesNoDemos(t *testing.T) {
@@ -296,6 +301,74 @@ func TestExportTournamentCSV(t *testing.T) {
 	require.Greater(t, len(lines), 1, "expected at least one grenade row")
 
 	assert.Contains(t, stderr.String(), "exported")
+
+	firstLines := len(lines)
+
+	var stderr2 bytes.Buffer
+	err = exportGrenades(options{dir: root, out: outFile}, io.Discard, &stderr2)
+	require.NoError(t, err)
+	assert.Contains(t, stderr2.String(), "already exported")
+
+	data2, err := os.ReadFile(outFile)
+	require.NoError(t, err)
+	lines2 := strings.Split(strings.TrimSpace(strings.TrimPrefix(string(data2), "\uFEFF")), "\n")
+	assert.Equal(t, firstLines, len(lines2), "resume should not duplicate rows")
+}
+
+func TestLoadCompletedDemos(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "out.csv")
+	progress := csvPath + ".progress"
+
+	var buf bytes.Buffer
+	require.NoError(t, writeCSV(&buf, []GrenadeRecord{
+		{DemoPath: "match-1/a.dem", GrenadeType: typeSmoke},
+		{DemoPath: "match-1/a.dem", GrenadeType: typeFlash},
+		{DemoPath: "match-2/b.dem", GrenadeType: typeHE},
+	}))
+	require.NoError(t, os.WriteFile(csvPath, buf.Bytes(), 0o600))
+	require.NoError(t, os.WriteFile(progress, []byte("match-3/empty.dem\n"), 0o600))
+
+	done, err := loadCompletedDemos(csvPath, progress)
+	require.NoError(t, err)
+	assert.Contains(t, done, "match-1/a.dem")
+	assert.Contains(t, done, "match-2/b.dem")
+	assert.Contains(t, done, "match-3/empty.dem")
+}
+
+func TestExportContinuesOnCorruptDemo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test")
+	}
+
+	demo := filepath.Clean("../../test/cs-demos/s2/s2.dem")
+	if _, err := os.Stat(demo); err != nil {
+		t.Skip("test demo not available")
+	}
+
+	root := t.TempDir()
+	badDir := filepath.Join(root, "match-bad")
+	goodDir := filepath.Join(root, "match-good")
+	require.NoError(t, os.MkdirAll(badDir, 0o755))
+	require.NoError(t, os.MkdirAll(goodDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(badDir, "broken.dem"), []byte("not a demo"), 0o600))
+
+	absDemo, err := filepath.Abs(demo)
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(absDemo, filepath.Join(goodDir, "s2.dem")))
+
+	outFile := filepath.Join(t.TempDir(), "grenades.csv")
+	var stderr bytes.Buffer
+	err = exportGrenades(options{dir: root, out: outFile}, io.Discard, &stderr)
+	require.NoError(t, err)
+	assert.Contains(t, stderr.String(), "error")
+	assert.Contains(t, stderr.String(), "failed 1")
+
+	data, err := os.ReadFile(outFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "match-good/s2.dem")
 }
 
 func TestCopyPayload(t *testing.T) {

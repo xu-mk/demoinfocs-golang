@@ -33,6 +33,17 @@ go run . -demo /path/to/demo.dem -out grenades.csv
 
 Omit `-out` to write the CSV to stdout. Progress messages always go to stderr.
 
+Each demo is flushed to disk as soon as it is parsed. If the process crashes,
+re-run the same command: already exported demos are skipped (tracked via the
+CSV and `grenades.csv.progress`). A broken demo is logged and skipped so the
+rest of the tournament still exports.
+
+Start over from scratch:
+
+```
+go run . -dir /path/to/tournament -out grenades.csv -overwrite
+```
+
 ## CSV columns
 
 | Column | Description |
