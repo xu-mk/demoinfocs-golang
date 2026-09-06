@@ -115,6 +115,31 @@ go build -o export-grenades .
 | 准星角度X / 准星角度Y | 投掷瞬间准星角度（pitch / yaw） |
 | 爆点X / 爆点Y / 爆点Z | 爆点坐标 |
 | 道具分类 | 空列，留给标注 |
-| setpos/setang | `setpos <x> <y> <z>; setang <pitch> <yaw>`，可直接复制到游戏控制台 |
+| setpos/setang | `setpos <x> <y> <z>; setang <pitch> <yaw>`，投掷者位置和准星，可复制到控制台 |
+| setpos爆点 | `setpos <x> <y> <z>`，传送到道具爆点 |
 
 火瓶和燃烧弹都记为 `火`。
+
+## 给已有 CSV 补上爆点 setpos 列
+
+如果 CSV 是旧版本导出的、还没有 `setpos爆点` 列，可以对文件夹（含子目录）批量补列：
+
+```bash
+cd examples/export-grenades
+go run ./add-detonate-setpos -dir /path/to/csv-folder
+```
+
+也可以先编译再跑：
+
+```bash
+go build -o add-detonate-setpos ./add-detonate-setpos
+./add-detonate-setpos -dir /path/to/csv-folder
+```
+
+脚本会递归查找全部 `.csv`：
+
+- 含有 `爆点X/Y/Z` 且还没有 `setpos爆点` 的文件：在末尾追加该列
+- 已经有 `setpos爆点` 的文件：跳过
+- 不是本工具导出的 CSV：忽略
+
+新导出的 CSV 已经包含这一列，不必再跑脚本。

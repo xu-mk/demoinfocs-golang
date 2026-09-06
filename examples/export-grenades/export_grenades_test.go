@@ -154,14 +154,16 @@ func TestWriteCSV(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(got), "\n")
 	require.Len(t, lines, 3)
-	assert.Equal(t, "de_mirage,liquid-vs-navi/m1-mirage.dem,烟,s1mple,1.500,2.250,3.000,10.000,90.000,4.000,5.000,6.125,,setpos 1.500 2.250 3.000; setang 10.000 90.000", lines[1])
+	assert.Equal(t, "de_mirage,liquid-vs-navi/m1-mirage.dem,烟,s1mple,1.500,2.250,3.000,10.000,90.000,4.000,5.000,6.125,,setpos 1.500 2.250 3.000; setang 10.000 90.000,setpos 4.000 5.000 6.125", lines[1])
 	assert.Contains(t, got, "准星角度X")
 	assert.NotContains(t, got, "准星角度Z")
 	assert.Contains(t, got, "setpos/setang")
+	assert.Contains(t, got, "setpos爆点")
 	assert.Contains(t, lines[2], "de_inferno")
 	assert.Contains(t, lines[2], "火")
 	assert.Contains(t, lines[2], `"ZywOo, the awper"`)
 	assert.Contains(t, lines[2], "setpos -100.000 0.000 64.000; setang 0.000 0.000")
+	assert.Contains(t, lines[2], "setpos -90.100 1.200 70.000")
 }
 
 func TestCollectDemoPaths(t *testing.T) {
@@ -288,6 +290,7 @@ func TestExportTournamentCSV(t *testing.T) {
 	assert.Contains(t, text, "准星角度X")
 	assert.NotContains(t, text, "准星角度Z")
 	assert.Contains(t, text, "setpos/setang")
+	assert.Contains(t, text, "setpos爆点")
 	assert.Contains(t, text, "match-1/s2.dem")
 	assert.NotContains(t, text, absDemo)
 	assert.Contains(t, text, "setpos ")

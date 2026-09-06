@@ -48,6 +48,7 @@ var csvHeader = []string{
 	"爆点Z",
 	"道具分类",
 	"setpos/setang",
+	"setpos爆点",
 }
 
 // GrenadeRecord is one thrown grenade, ready for CSV export / annotation.
@@ -406,6 +407,10 @@ func copyPayload(rec GrenadeRecord) string {
 		"; setang " + formatCoord(rec.ViewAngles.X) + " " + formatCoord(rec.ViewAngles.Y)
 }
 
+func detonateSetpos(rec GrenadeRecord) string {
+	return "setpos " + formatCoord(rec.Detonate.X) + " " + formatCoord(rec.Detonate.Y) + " " + formatCoord(rec.Detonate.Z)
+}
+
 func grenadeTypeLabel(t common.EquipmentType) (string, bool) {
 	switch t {
 	case common.EqSmoke:
@@ -631,6 +636,7 @@ func (s *csvSink) writeRecords(records []GrenadeRecord) error {
 		s.row[11] = formatCoord(rec.Detonate.Z)
 		s.row[12] = rec.Category
 		s.row[13] = copyPayload(rec)
+		s.row[14] = detonateSetpos(rec)
 
 		err := s.cw.Write(s.row)
 		if err != nil {
