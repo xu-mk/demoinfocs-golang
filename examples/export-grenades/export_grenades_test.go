@@ -26,8 +26,8 @@ func TestGrenadeTypeLabel(t *testing.T) {
 		{common.EqSmoke, typeSmoke, true},
 		{common.EqFlash, typeFlash, true},
 		{common.EqHE, typeHE, true},
-		{common.EqMolotov, typeFire, true},
-		{common.EqIncendiary, typeFire, true},
+		{common.EqMolotov, typeMolotov, true},
+		{common.EqIncendiary, typeIncendiary, true},
 		{common.EqDecoy, typeDecoy, true},
 		{common.EqAK47, "", false},
 		{common.EqUnknown, "", false},
@@ -133,7 +133,7 @@ func TestWriteCSV(t *testing.T) {
 		{
 			Map:         "de_inferno",
 			DemoPath:    `/tourney/faze-vs-vitality/m2,inferno.dem`,
-			GrenadeType: typeFire,
+			GrenadeType: typeMolotov,
 			Thrower:     "ZywOo, the awper",
 			Start:       r3.Vector{X: -100, Y: 0, Z: 64},
 			Detonate:    r3.Vector{X: -90.1, Y: 1.2, Z: 70},
@@ -150,20 +150,22 @@ func TestWriteCSV(t *testing.T) {
 
 	got := strings.TrimPrefix(buf.String(), "\uFEFF")
 	assert.True(t, strings.HasPrefix(got, strings.Join(csvHeader, ",")+"\n"))
-	assert.Contains(t, got, "道具种类")
+	assert.Contains(t, got, "grenade_type")
+	assert.True(t, strings.HasSuffix(strings.TrimSpace(strings.Split(got, "\n")[0]), ",category"))
 
 	lines := strings.Split(strings.TrimSpace(got), "\n")
 	require.Len(t, lines, 3)
-	assert.Equal(t, "de_mirage,liquid-vs-navi/m1-mirage.dem,烟,s1mple,1.500,2.250,3.000,10.000,90.000,4.000,5.000,6.125,,setpos 1.500 2.250 3.000; setang 10.000 90.000,setpos 4.000 5.000 6.125", lines[1])
-	assert.Contains(t, got, "准星角度X")
-	assert.NotContains(t, got, "准星角度Z")
+	assert.Equal(t, "de_mirage,liquid-vs-navi/m1-mirage.dem,smoke,s1mple,1.500,2.250,3.000,10.000,90.000,4.000,5.000,6.125,setpos 1.500 2.250 3.000; setang 10.000 90.000,gen_grenade_explode smoke 4.000 5.000 6.125,", lines[1])
+	assert.Contains(t, got, "view_x")
+	assert.NotContains(t, got, "准星角度")
 	assert.Contains(t, got, "setpos/setang")
-	assert.Contains(t, got, "setpos爆点")
+	assert.Contains(t, got, "gen_grenade_explode")
 	assert.Contains(t, lines[2], "de_inferno")
-	assert.Contains(t, lines[2], "火")
+	assert.Contains(t, lines[2], "molotov")
 	assert.Contains(t, lines[2], `"ZywOo, the awper"`)
 	assert.Contains(t, lines[2], "setpos -100.000 0.000 64.000; setang 0.000 0.000")
-	assert.Contains(t, lines[2], "setpos -90.100 1.200 70.000")
+	assert.Contains(t, lines[2], "gen_grenade_explode molotov -90.100 1.200 70.000")
+	assert.True(t, strings.HasSuffix(lines[1], ","))
 }
 
 func TestCollectDemoPaths(t *testing.T) {
@@ -286,11 +288,12 @@ func TestExportTournamentCSV(t *testing.T) {
 
 	text := strings.TrimPrefix(string(data), "\uFEFF")
 	assert.True(t, strings.HasPrefix(text, strings.Join(csvHeader, ",")+"\n"))
-	assert.Contains(t, text, "道具种类")
-	assert.Contains(t, text, "准星角度X")
-	assert.NotContains(t, text, "准星角度Z")
+	assert.Contains(t, text, "grenade_type")
+	assert.Contains(t, text, "view_x")
+	assert.NotContains(t, text, "准星角度")
 	assert.Contains(t, text, "setpos/setang")
-	assert.Contains(t, text, "setpos爆点")
+	assert.Contains(t, text, "gen_grenade_explode")
+	assert.Contains(t, text, ",category")
 	assert.Contains(t, text, "match-1/s2.dem")
 	assert.NotContains(t, text, absDemo)
 	assert.Contains(t, text, "setpos ")
@@ -372,6 +375,16 @@ func TestExportContinuesOnCorruptDemo(t *testing.T) {
 	data, err := os.ReadFile(outFile)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "match-good/s2.dem")
+}
+
+func TestGenGrenadeExplode(t *testing.T) {
+	t.Parallel()
+
+	got := genGrenadeExplode(GrenadeRecord{
+		GrenadeType: typeSmoke,
+		Detonate:    r3.Vector{X: 4, Y: 5, Z: 6.125},
+	})
+	assert.Equal(t, "gen_grenade_explode smoke 4.000 5.000 6.125", got)
 }
 
 func TestCopyPayload(t *testing.T) {

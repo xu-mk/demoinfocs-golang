@@ -14,10 +14,8 @@ import (
 
 const (
 	utf8BOM     = "\uFEFF"
-	colDetonate = "setpos爆点"
-	colX        = "爆点X"
-	colY        = "爆点Y"
-	colZ        = "爆点Z"
+	colExplode  = "gen_grenade_explode"
+	colCategory = "category"
 )
 
 func main() {
@@ -67,7 +65,7 @@ func patchDir(root string, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "patched %s\n", rel)
 		case "skipped":
 			skipped++
-			fmt.Fprintf(stderr, "skip %s (already has %s)\n", rel, colDetonate)
+			fmt.Fprintf(stderr, "skip %s (already has %s)\n", rel, colExplode)
 		default:
 			ignored++
 			fmt.Fprintf(stderr, "ignore %s (not a grenade export CSV)\n", rel)
@@ -140,31 +138,76 @@ func patchCSV(path string) (string, error) {
 	}
 
 	header := rows[0]
-	if indexOf(header, colDetonate) >= 0 {
+	if indexOf(header, colExplode) >= 0 {
 		return "skipped", nil
 	}
 
-	xCol := indexOf(header, colX)
-	yCol := indexOf(header, colY)
-	zCol := indexOf(header, colZ)
+	xCol := indexOfAny(header, "detonate_x", "爆点X")
+	yCol := indexOfAny(header, "detonate_y", "爆点Y")
+	zCol := indexOfAny(header, "detonate_z", "爆点Z")
 	if xCol < 0 || yCol < 0 || zCol < 0 {
 		return "ignored", nil
 	}
 
-	rows[0] = append(header, colDetonate)
+	typeCol := indexOfAny(header, "grenade_type", "道具种类")
+	catCol := indexOfAny(header, colCategory, "道具分类")
 
-	for i := 1; i < len(rows); i++ {
-		row := rows[i]
-		x, y, z := cell(row, xCol), cell(row, yCol), cell(row, zCol)
-		rows[i] = append(row, "setpos "+x+" "+y+" "+z)
+	outHeader := make([]string, 0, len(header)+1)
+	for _, name := range header {
+		if name == colExplode || name == "setpos爆点" || name == colCategory || name == "道具分类" {
+			continue
+		}
+
+		outHeader = append(outHeader, name)
 	}
 
-	err = writeCSV(path, rows)
+	outHeader = append(outHeader, colExplode, colCategory)
+
+	out := make([][]string, 0, len(rows))
+	out = append(out, outHeader)
+
+	for _, row := range rows[1:] {
+		x, y, z := cell(row, xCol), cell(row, yCol), cell(row, zCol)
+		n := "gen_grenade_explode " + normalizeType(cell(row, typeCol)) + " " + x + " " + y + " " + z
+		outRow := make([]string, 0, len(outHeader))
+
+		for i, name := range header {
+			if name == colExplode || name == "setpos爆点" || name == colCategory || name == "道具分类" {
+				continue
+			}
+
+			outRow = append(outRow, cell(row, i))
+		}
+
+		outRow = append(outRow, n, cell(row, catCol))
+		out = append(out, outRow)
+	}
+
+	err = writeCSV(path, out)
 	if err != nil {
 		return "", err
 	}
 
 	return "patched", nil
+}
+
+func normalizeType(label string) string {
+	switch label {
+	case "烟", "smoke":
+		return "smoke"
+	case "闪", "flash":
+		return "flash"
+	case "雷", "he":
+		return "he"
+	case "火", "molotov":
+		return "molotov"
+	case "incendiary", "incediary":
+		return "incendiary"
+	case "诱饵弹", "decoy":
+		return "decoy"
+	default:
+		return label
+	}
 }
 
 func readCSV(path string) ([][]string, error) {
@@ -238,6 +281,16 @@ func stripBOM(r io.Reader) io.Reader {
 func indexOf(vals []string, want string) int {
 	for i, v := range vals {
 		if v == want {
+			return i
+		}
+	}
+
+	return -1
+}
+
+func indexOfAny(vals []string, names ...string) int {
+	for _, name := range names {
+		if i := indexOf(vals, name); i >= 0 {
 			return i
 		}
 	}

@@ -1,6 +1,6 @@
 # 赛事 Demo 道具导出
 
-从赛事 demo 目录中提取全部投掷物（烟 / 闪 / 雷 / 火 / 诱饵弹），导出为可标注的 CSV。
+从赛事 demo 目录中提取全部投掷物（smoke / flash / he / molotov / incendiary / decoy），导出为可标注的 CSV。
 
 典型目录结构：赛事根目录下按场次分子目录，每场包含 2–5 个 `.dem` 文件。
 
@@ -93,7 +93,7 @@ go build -o export-grenades .
 ./export-grenades -dir /path/to/tournament -out grenades.csv
 ```
 
-已经导出的 demo 会被跳过（依据 CSV 中的「道具所属demo」列，以及同目录的 `grenades.csv.progress`）。某个 demo 损坏或解析失败时，会打印错误并继续后面的文件。
+已经导出的 demo 会被跳过（依据 CSV 中的 `demo` 列，以及同目录的 `grenades.csv.progress`）。某个 demo 损坏或解析失败时，会打印错误并继续后面的文件。
 
 若要整份重来：
 
@@ -103,26 +103,26 @@ go build -o export-grenades .
 
 ## CSV 列说明
 
-文件为 **UTF-8 带 BOM**，可用 Excel / WPS 直接打开，中文表头不会乱码。
+文件为 **UTF-8 带 BOM**。最后一列 `category` 为空，留给手动标注。
 
-| 列 | 说明 |
+| Column | Description |
 |-|-|
-| 道具所属地图 | 地图名，如 `de_mirage` |
-| 道具所属demo | 相对 `-dir` 的 demo 路径，如 `liquid-vs-navi/m1-mirage.dem` |
-| 道具种类 | `烟` / `闪` / `雷` / `火` / `诱饵弹` |
-| 道具投掷者 | 投掷者名字 |
-| 起点X / 起点Y / 起点Z | 投掷瞬间投掷者坐标 |
-| 准星角度X / 准星角度Y | 投掷瞬间准星角度（pitch / yaw） |
-| 爆点X / 爆点Y / 爆点Z | 爆点坐标 |
-| 道具分类 | 空列，留给标注 |
-| setpos/setang | `setpos <x> <y> <z>; setang <pitch> <yaw>`，投掷者位置和准星，可复制到控制台 |
-| setpos爆点 | `setpos <x> <y> <z>`，传送到道具爆点 |
+| map | Map name, e.g. `de_mirage` |
+| demo | Demo path relative to `-dir` |
+| grenade_type | `smoke` / `flash` / `he` / `molotov` / `incendiary` / `decoy` |
+| thrower | Thrower name |
+| start_x / start_y / start_z | Thrower position at throw time |
+| view_x / view_y | Eye angles at throw time (pitch / yaw) |
+| detonate_x / detonate_y / detonate_z | Detonation coordinates |
+| setpos/setang | `setpos <x> <y> <z>; setang <pitch> <yaw>` |
+| gen_grenade_explode | `gen_grenade_explode <type> <x> <y> <z>` |
+| category | Empty, reserved for manual annotation |
 
-火瓶和燃烧弹都记为 `火`。
+Molotov and incendiary are exported as separate types.
 
-## 给已有 CSV 补上爆点 setpos 列
+## 给已有 CSV 补上 gen_grenade_explode 列
 
-如果 CSV 是旧版本导出的、还没有 `setpos爆点` 列，可以对文件夹（含子目录）批量补列：
+如果 CSV 是旧版本导出的、还没有 `gen_grenade_explode` 列，可以对文件夹（含子目录）批量补列：
 
 ```bash
 cd examples/export-grenades
@@ -138,8 +138,8 @@ go build -o add-detonate-setpos ./add-detonate-setpos
 
 脚本会递归查找全部 `.csv`：
 
-- 含有 `爆点X/Y/Z` 且还没有 `setpos爆点` 的文件：在末尾追加该列
-- 已经有 `setpos爆点` 的文件：跳过
+- 含有爆点坐标且还没有 `gen_grenade_explode` 的文件：补上该列，并把 `category` 放到最后
+- 已经有 `gen_grenade_explode` 的文件：跳过
 - 不是本工具导出的 CSV：忽略
 
 新导出的 CSV 已经包含这一列，不必再跑脚本。

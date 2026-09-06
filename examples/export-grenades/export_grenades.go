@@ -21,34 +21,37 @@ import (
 	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
 )
 
-// Grenade type labels for annotation (烟/闪/雷/火/诱饵弹).
 const (
-	typeSmoke = "烟"
-	typeFlash = "闪"
-	typeHE    = "雷"
-	typeFire  = "火"
-	typeDecoy = "诱饵弹"
+	typeSmoke      = "smoke"
+	typeFlash      = "flash"
+	typeHE         = "he"
+	typeMolotov    = "molotov"
+	typeIncendiary = "incendiary"
+	typeDecoy      = "decoy"
+
+	colDemo       = "demo"
+	colDemoLegacy = "道具所属demo"
 )
 
-// utf8BOM lets Excel / WPS on Windows detect UTF-8 and show Chinese headers correctly.
+// utf8BOM lets Excel / WPS on Windows detect UTF-8.
 const utf8BOM = "\uFEFF"
 
 var csvHeader = []string{
-	"道具所属地图",
-	"道具所属demo",
-	"道具种类",
-	"道具投掷者",
-	"起点X",
-	"起点Y",
-	"起点Z",
-	"准星角度X",
-	"准星角度Y",
-	"爆点X",
-	"爆点Y",
-	"爆点Z",
-	"道具分类",
+	"map",
+	"demo",
+	"grenade_type",
+	"thrower",
+	"start_x",
+	"start_y",
+	"start_z",
+	"view_x",
+	"view_y",
+	"detonate_x",
+	"detonate_y",
+	"detonate_z",
 	"setpos/setang",
-	"setpos爆点",
+	"gen_grenade_explode",
+	"category",
 }
 
 // GrenadeRecord is one thrown grenade, ready for CSV export / annotation.
@@ -407,8 +410,9 @@ func copyPayload(rec GrenadeRecord) string {
 		"; setang " + formatCoord(rec.ViewAngles.X) + " " + formatCoord(rec.ViewAngles.Y)
 }
 
-func detonateSetpos(rec GrenadeRecord) string {
-	return "setpos " + formatCoord(rec.Detonate.X) + " " + formatCoord(rec.Detonate.Y) + " " + formatCoord(rec.Detonate.Z)
+func genGrenadeExplode(rec GrenadeRecord) string {
+	return "gen_grenade_explode " + rec.GrenadeType + " " +
+		formatCoord(rec.Detonate.X) + " " + formatCoord(rec.Detonate.Y) + " " + formatCoord(rec.Detonate.Z)
 }
 
 func grenadeTypeLabel(t common.EquipmentType) (string, bool) {
@@ -419,8 +423,10 @@ func grenadeTypeLabel(t common.EquipmentType) (string, bool) {
 		return typeFlash, true
 	case common.EqHE:
 		return typeHE, true
-	case common.EqMolotov, common.EqIncendiary:
-		return typeFire, true
+	case common.EqMolotov:
+		return typeMolotov, true
+	case common.EqIncendiary:
+		return typeIncendiary, true
 	case common.EqDecoy:
 		return typeDecoy, true
 	default:
@@ -512,7 +518,10 @@ func loadCompletedFromCSV(path string, done map[string]struct{}) error {
 		return fmt.Errorf("failed to read CSV header: %w", err)
 	}
 
-	demoCol := indexOf(header, "道具所属demo")
+	demoCol := indexOf(header, colDemo)
+	if demoCol < 0 {
+		demoCol = indexOf(header, colDemoLegacy)
+	}
 	if demoCol < 0 {
 		return nil
 	}
@@ -634,9 +643,9 @@ func (s *csvSink) writeRecords(records []GrenadeRecord) error {
 		s.row[9] = formatCoord(rec.Detonate.X)
 		s.row[10] = formatCoord(rec.Detonate.Y)
 		s.row[11] = formatCoord(rec.Detonate.Z)
-		s.row[12] = rec.Category
-		s.row[13] = copyPayload(rec)
-		s.row[14] = detonateSetpos(rec)
+		s.row[12] = copyPayload(rec)
+		s.row[13] = genGrenadeExplode(rec)
+		s.row[14] = rec.Category
 
 		err := s.cw.Write(s.row)
 		if err != nil {
